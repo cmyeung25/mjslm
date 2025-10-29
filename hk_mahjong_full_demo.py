@@ -40,10 +40,18 @@ The module exposes a :func:`main` entry-point so it can be executed directly.
 from __future__ import annotations
 
 import random
-import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
+
+try:  # pragma: no cover - optional dependency
+    import gym
+    from gym import spaces
+except ImportError:  # pragma: no cover - optional dependency
+    gym = None
+    spaces = None
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +401,7 @@ def can_win_hand(concealed: Sequence[int], melds: Sequence[Meld]) -> bool:
 class MahjongGame:
     """Single-round Hong Kong Mahjong game loop."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, rng: Optional[random.Random] = None, verbose: bool = True) -> None:
         self.round_wind = 27  # East
         self.dealer = 0
         self.players = [
@@ -406,11 +414,17 @@ class MahjongGame:
         self.discard_pile: List[int] = []
         self.step_counter = 1
         self.current_player = self.dealer
+        self.verbose = verbose
+        self.rng = rng or random.Random()
+        self.round_over = False
+        self.result: Optional[dict] = None
+        self.last_drawn_tile: Optional[int] = None
 
     # ----- Utility logging -------------------------------------------------
 
     def log(self, message: str) -> None:
-        print(f"[{self.step_counter:03d}] {message}")
+        if self.verbose:
+            print(f"[{self.step_counter:03d}] {message}")
         self.step_counter += 1
 
     # ----- Initial setup ---------------------------------------------------
@@ -419,10 +433,13 @@ class MahjongGame:
         self.wall = []
         for tile in ALL_TILES:
             self.wall.extend([tile] * 4)
-        random.shuffle(self.wall)
+        self.rng.shuffle(self.wall)
         self.discard_pile.clear()
 
     def deal_tiles(self) -> None:
+        self.round_over = False
+        self.result = None
+        self.last_drawn_tile = None
         for player in self.players:
             player.hand.clear()
             player.melds.clear()
@@ -462,6 +479,7 @@ class MahjongGame:
         tile = self.wall.pop()
         player.hand.append(tile)
         player.hand.sort()
+        self.last_drawn_tile = tile
         return tile
 
     # ----- Action discovery ------------------------------------------------
@@ -560,7 +578,7 @@ class MahjongGame:
 
     # ----- Action execution ------------------------------------------------
 
-    def execute_concealed_kong(self, player: PlayerState, tile: int) -> None:
+    def execute_concealed_kong(self, player: PlayerState, tile: int) -> Optional[int]:
         player.remove_tiles([tile] * 4)
         player.add_meld(Meld("kong", [tile] * 4, open=False))
         self.log(f"{player.name} declares concealed kong of {tile_name(tile)}")
@@ -569,8 +587,9 @@ class MahjongGame:
             self.log("Wall is empty after concealed kong.")
         else:
             self.log(f"{player.name} draws supplement tile {tile_name(supplement)}")
+        return supplement
 
-    def execute_added_kong(self, player: PlayerState, tile: int) -> None:
+    def execute_added_kong(self, player: PlayerState, tile: int) -> Optional[int]:
         for meld in player.melds:
             if meld.type == "pon" and meld.tiles[0] == tile:
                 meld.type = "kong"
@@ -584,8 +603,9 @@ class MahjongGame:
             self.log("Wall is empty after added kong.")
         else:
             self.log(f"{player.name} draws supplement tile {tile_name(supplement)}")
+        return supplement
 
-    def execute_open_kong(self, player_index: int, tile: int, from_player: int) -> None:
+    def execute_open_kong(self, player_index: int, tile: int, from_player: int) -> Optional[int]:
         player = self.players[player_index]
         player.remove_tiles([tile] * 3)
         player.add_meld(Meld("kong", [tile] * 4, open=True, from_player=from_player))
@@ -597,6 +617,7 @@ class MahjongGame:
             self.log("Wall is empty after kong supplement draw.")
         else:
             self.log(f"{player.name} draws supplement tile {tile_name(supplement)}")
+        return supplement
 
     def execute_pon(self, player_index: int, tile: int, from_player: int) -> None:
         player = self.players[player_index]
@@ -693,7 +714,15 @@ class MahjongGame:
 
         self.show_game_state()
         self.log("Round finished.")
-        sys.exit(0)
+        self.round_over = True
+        self.result = {
+            "winner": winner_index,
+            "win_type": win_type,
+            "tile": tile,
+            "fan": fan_total,
+            "breakdown": breakdown,
+            "discarder": discarder,
+        }
 
     # ----- Main loop -------------------------------------------------------
 
@@ -720,7 +749,7 @@ class MahjongGame:
                     choice = self.ai_choose_self_action(actions)
                     if choice:
                         self.process_self_action(self.current_player, choice)
-                        if choice[0] in {"tsumo"}:
+                        if self.round_over:
                             return
                         continue
 
@@ -781,24 +810,25 @@ class MahjongGame:
             if choice.isdigit() and 0 <= int(choice) < len(actions):
                 action = actions[int(choice)]
                 self.process_self_action(0, action)
-                if action[0] == "tsumo":
-                    sys.exit(0)
+                if action[0] == "tsumo" and self.round_over:
+                    return
                 return
             print("Invalid choice. Try again.")
 
     def process_self_action(
         self, player_index: int, action: Tuple[str, Optional[int]]
-    ) -> None:
+    ) -> Optional[int]:
         player = self.players[player_index]
         name, tile = action
         if name == "tsumo":
             self.resolve_win(player_index, "tsumo", tile or player.hand[-1])
+            return tile
         elif name == "concealed_kong" and tile is not None:
-            self.execute_concealed_kong(player, tile)
+            return self.execute_concealed_kong(player, tile)
         elif name == "added_kong" and tile is not None:
-            self.execute_added_kong(player, tile)
+            return self.execute_added_kong(player, tile)
         else:
-            pass
+            return None
 
     def prompt_discard(self, player_index: int) -> int:
         player = self.players[player_index]
@@ -838,6 +868,376 @@ class MahjongGame:
             f"Player {idx+1} ({actor.name}) chooses {action[0]}"
         )
         return idx, action
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Gym compatible environment
+# ---------------------------------------------------------------------------
+
+
+class HongKongMahjongEnv:
+    """OpenAI Gym style environment that wraps :class:`MahjongGame`."""
+
+    metadata = {"render_modes": ["human"]}
+
+    def __init__(self, *, seed: Optional[int] = None, verbose: bool = False) -> None:
+        if gym is None or spaces is None:  # pragma: no cover - optional dependency
+            raise ImportError(
+                "gym is required to use HongKongMahjongEnv. Install gym before "
+                "creating the environment."
+            )
+
+        self.random = random.Random(seed)
+        self.game = MahjongGame(rng=self.random, verbose=verbose)
+        self.agent_index = 0
+
+        self.action_space = spaces.Discrete(64)
+        self.observation_space = spaces.Dict(
+            {
+                "hand": spaces.Box(low=0, high=4, shape=(34,), dtype=np.int8),
+                "melds": spaces.Box(low=0, high=4, shape=(34,), dtype=np.int8),
+                "discards": spaces.Box(low=0, high=16, shape=(34,), dtype=np.int8),
+                "tiles_remaining": spaces.Box(low=0, high=136, shape=(), dtype=np.int16),
+                "current_player": spaces.Discrete(4),
+                "last_discard": spaces.Box(low=-1, high=33, shape=(), dtype=np.int16),
+                "stage": spaces.Discrete(4),
+                "must_discard": spaces.MultiBinary(1),
+            }
+        )
+
+        self._legal_actions: List[Tuple[str, Optional[int]]] = []
+        self._stage: Optional[str] = None
+        self._pending_reactions: List[Tuple[int, Tuple[str, Optional[int]]]] = []
+        self._reaction_discarder: Optional[int] = None
+        self._reaction_tile: Optional[int] = None
+        self._terminal_reason: Optional[str] = None
+        self._pending_draw_override: Optional[int] = None
+
+    # ----- Gym API ---------------------------------------------------------
+
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
+        if seed is not None:
+            self.random.seed(seed)
+        self.game.build_wall()
+        self.game.deal_tiles()
+        self._legal_actions.clear()
+        self._stage = None
+        self._pending_reactions = []
+        self._reaction_discarder = None
+        self._reaction_tile = None
+        self._terminal_reason = None
+        self._pending_draw_override = None
+        for player in self.game.players:
+            player.score = 0
+
+        self._advance_until_agent_turn()
+        return self._make_observation(), {"legal_actions": self._legal_actions.copy()}
+
+    def step(self, action: int):
+        if self.game.round_over:
+            raise RuntimeError("Cannot call step() when the round is over. Call reset().")
+        if action >= len(self._legal_actions):
+            raise ValueError(
+                f"Action index {action} is invalid for the current stage with "
+                f"{len(self._legal_actions)} legal actions."
+            )
+
+        chosen = self._legal_actions[action]
+        if self._stage == "discard":
+            self._apply_discard(chosen)
+        elif self._stage == "self_action":
+            self._apply_self_action(chosen)
+        elif self._stage == "reaction":
+            self._apply_reaction(chosen)
+        else:
+            raise RuntimeError(f"Unexpected stage {self._stage}")
+
+        self._advance_until_agent_turn()
+
+        terminated = bool(self.game.round_over)
+        truncated = False
+        reward = 0.0
+
+        if terminated:
+            if self.game.result and self.game.result.get("winner") == self.agent_index:
+                reward = 1.0
+            elif self.game.result and self.game.result.get("winner") is not None:
+                reward = -1.0
+
+        observation = self._make_observation()
+        info = {
+            "legal_actions": self._legal_actions.copy(),
+            "stage": self._stage,
+            "result": self.game.result,
+            "terminal_reason": self._terminal_reason,
+        }
+        return observation, reward, terminated, truncated, info
+
+    # ----- Internal helpers ------------------------------------------------
+
+    def _clear_reaction_context(self) -> None:
+        self._pending_reactions = []
+        self._reaction_discarder = None
+        self._reaction_tile = None
+        self._legal_actions = []
+        self._stage = None
+
+    def _make_observation(self) -> dict:
+        player = self.game.players[self.agent_index]
+        hand_vec = np.zeros(34, dtype=np.int8)
+        for tile in player.hand:
+            hand_vec[tile] += 1
+
+        meld_vec = np.zeros(34, dtype=np.int8)
+        for meld in player.melds:
+            tiles = meld.tiles if meld.type != "kong" else meld.tiles[:3]
+            for tile in tiles:
+                meld_vec[tile] += 1
+
+        discard_vec = np.zeros(34, dtype=np.int8)
+        for p in self.game.players:
+            for tile in p.discards:
+                discard_vec[tile] += 1
+
+        stage_mapping = {None: 0, "self_action": 1, "discard": 2, "reaction": 3}
+        last_discard = self.game.discard_pile[-1] if self.game.discard_pile else -1
+
+        return {
+            "hand": hand_vec,
+            "melds": meld_vec,
+            "discards": discard_vec,
+            "tiles_remaining": np.int16(self.game.tiles_remaining()),
+            "current_player": np.int8(self.game.current_player),
+            "last_discard": np.int16(last_discard),
+            "stage": np.int8(stage_mapping.get(self._stage, 0)),
+            "must_discard": np.array(
+                [1 if self.game.players[self.agent_index].must_discard else 0], dtype=np.int8
+            ),
+        }
+
+    def _advance_until_agent_turn(self) -> None:
+        while not self.game.round_over:
+            player = self.game.players[self.game.current_player]
+            if self.game.current_player == self.agent_index:
+                if not player.must_discard:
+                    if self._pending_draw_override is not None:
+                        tile = self._pending_draw_override
+                        self._pending_draw_override = None
+                    else:
+                        tile = self.game.draw_tile(player)
+                    if tile is None:
+                        self._terminal_reason = "wall_empty"
+                        self.game.round_over = True
+                        self.game.result = {"winner": None, "win_type": "draw"}
+                        return
+                    self.game.log(
+                        f"Player {self.agent_index+1} ({player.name}) draws {tile_name(tile)}"
+                    )
+                    actions = self.game.available_self_actions(self.agent_index, tile)
+                    if actions:
+                        self._stage = "self_action"
+                        self._legal_actions = [("skip", None)] + actions
+                        return
+                    player.must_discard = True
+                if player.must_discard:
+                    self._stage = "discard"
+                    self._legal_actions = [("discard", tile) for tile in player.hand]
+                    return
+            else:
+                if self._perform_ai_turn():
+                    return
+            if self.game.round_over:
+                return
+
+        self._stage = None
+        self._legal_actions = []
+
+    def _perform_ai_turn(self) -> bool:
+        idx = self.game.current_player
+        player = self.game.players[idx]
+
+        if not player.must_discard:
+            tile = self.game.draw_tile(player)
+            if tile is None:
+                self._terminal_reason = "wall_empty"
+                self.game.round_over = True
+                self.game.result = {"winner": None, "win_type": "draw"}
+                return False
+            self.game.log(f"Player {idx+1} ({player.name}) draws {tile_name(tile)}")
+
+            actions = self.game.available_self_actions(idx, tile)
+            choice = self.game.ai_choose_self_action(actions)
+            if choice:
+                self.game.process_self_action(idx, choice)
+                if self.game.round_over:
+                    return False
+                if choice[0] in {"concealed_kong", "added_kong"}:
+                    player.must_discard = True
+                    return False
+            player.must_discard = True
+
+        discard_tile = self.game.ai_discard(player)
+        self.game.discard_pile.append(discard_tile)
+        player.discards.append(discard_tile)
+        self.game.log(
+            f"Player {idx+1} ({player.name}) discards {tile_name(discard_tile)}"
+        )
+        player.must_discard = False
+
+        reactions = self.game.reactions_to_discard(idx, discard_tile)
+        if self._prepare_reactions(idx, discard_tile, reactions):
+            return True
+
+        self.game.current_player = (idx + 1) % 4
+        return False
+
+    def _prepare_reactions(
+        self,
+        discarder: int,
+        tile: int,
+        reactions: List[Tuple[int, Tuple[str, Optional[int]]]],
+    ) -> bool:
+        if not reactions:
+            return False
+
+        agent_options = [action for idx, action in reactions if idx == self.agent_index]
+        if agent_options:
+            self._stage = "reaction"
+            self._legal_actions = [("skip", None)] + agent_options
+            self._pending_reactions = reactions
+            self._reaction_discarder = discarder
+            self._reaction_tile = tile
+            return True
+
+        chosen = self.game.resolve_reactions(discarder, reactions)
+        if chosen is None:
+            return False
+        actor_idx, action = chosen
+        self._clear_reaction_context()
+        self._execute_reaction(actor_idx, action, discarder, tile)
+        return False
+
+    def _apply_discard(self, action: Tuple[str, Optional[int]]) -> None:
+        if action[0] != "discard" or action[1] is None:
+            raise ValueError("Invalid discard action")
+        player = self.game.players[self.agent_index]
+        tile = action[1]
+        player.hand.remove(tile)
+        self.game.discard_pile.append(tile)
+        player.discards.append(tile)
+        self.game.log(
+            f"Player {self.agent_index+1} ({player.name}) discards {tile_name(tile)}"
+        )
+        player.must_discard = False
+
+        reactions = self.game.reactions_to_discard(self.agent_index, tile)
+        if self._prepare_reactions(self.agent_index, tile, reactions):
+            return
+
+        self.game.current_player = (self.agent_index + 1) % 4
+
+    def _apply_self_action(self, action: Tuple[str, Optional[int]]) -> None:
+        if action[0] == "skip":
+            self.game.players[self.agent_index].must_discard = True
+            return
+        supplement = self.game.process_self_action(self.agent_index, action)
+        if not self.game.round_over and action[0] in {"concealed_kong", "added_kong"}:
+            self.game.players[self.agent_index].must_discard = False
+            self._pending_draw_override = supplement
+
+    def _apply_reaction(self, action: Tuple[str, Optional[int]]) -> None:
+        if self._reaction_discarder is None or self._reaction_tile is None:
+            raise RuntimeError("Reaction context is missing")
+
+        if action[0] == "skip":
+            remaining = [item for item in self._pending_reactions if item[0] != self.agent_index]
+            if remaining:
+                chosen = self.game.resolve_reactions(self._reaction_discarder, remaining)
+                if chosen:
+                    self._clear_reaction_context()
+                    actor_idx, act = chosen
+                    self._execute_reaction(
+                        actor_idx, act, self._reaction_discarder, self._reaction_tile
+                    )
+                    return
+            self.game.current_player = (self._reaction_discarder + 1) % 4
+            self._clear_reaction_context()
+            return
+
+        player = self.game.players[self.agent_index]
+        tile = self._reaction_tile
+
+        if action[0] == "ron":
+            player.hand.append(tile)
+            player.hand.sort()
+            self.game.resolve_win(self.agent_index, "ron", tile, discarder=self._reaction_discarder)
+            self._clear_reaction_context()
+            return
+        supplement: Optional[int] = None
+        if action[0] == "kong":
+            player.hand.extend([tile])
+            supplement = self.game.execute_open_kong(
+                self.agent_index, tile, self._reaction_discarder
+            )
+        elif action[0] == "pon":
+            player.hand.append(tile)
+            self.game.execute_pon(self.agent_index, tile, self._reaction_discarder)
+        elif action[0] == "chi":
+            player.hand.append(tile)
+            base_tile = action[1] if action[1] is not None else tile
+            self.game.execute_chi(self.agent_index, base_tile, self._reaction_discarder)
+        else:
+            raise ValueError(f"Unsupported reaction action {action[0]}")
+
+        if not self.game.round_over:
+            if action[0] == "kong":
+                player.must_discard = False
+                self._pending_draw_override = supplement
+            else:
+                player.must_discard = True
+            self.game.current_player = self.agent_index
+        self._clear_reaction_context()
+
+    def _execute_reaction(
+        self,
+        actor_idx: int,
+        action: Tuple[str, Optional[int]],
+        discarder: int,
+        tile: int,
+    ) -> None:
+        actor = self.game.players[actor_idx]
+        if action[0] == "ron":
+            actor.hand.append(tile)
+            actor.hand.sort()
+            self.game.resolve_win(actor_idx, "ron", tile, discarder=discarder)
+            return
+        if action[0] == "kong":
+            actor.hand.extend([tile])
+            self.game.execute_open_kong(actor_idx, tile, discarder)
+            actor.must_discard = True
+            self.game.current_player = actor_idx
+        elif action[0] == "pon":
+            actor.hand.append(tile)
+            self.game.execute_pon(actor_idx, tile, discarder)
+            actor.must_discard = True
+            self.game.current_player = actor_idx
+        elif action[0] == "chi":
+            actor.hand.append(tile)
+            base_tile = action[1] if action[1] is not None else tile
+            self.game.execute_chi(actor_idx, base_tile, discarder)
+            actor.must_discard = True
+            self.game.current_player = actor_idx
+
+    # ----- Rendering -------------------------------------------------------
+
+    def render(self, mode: str = "human") -> None:
+        if mode != "human":
+            raise ValueError("Only human render mode is supported")
+        self.game.show_game_state()
+
+    def close(self) -> None:  # pragma: no cover - compatibility stub
+        """Nothing to clean up, kept for gym compatibility."""
+        return
 
 
 # ---------------------------------------------------------------------------
