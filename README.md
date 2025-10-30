@@ -74,4 +74,6 @@ Install dependencies if needed:
 
 ```bash
 pip install gym numpy
+# or, if you prefer the actively maintained fork
+pip install gymnasium numpy
 ```

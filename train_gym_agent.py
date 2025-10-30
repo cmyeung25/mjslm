@@ -34,10 +34,17 @@ import numpy as np
 
 try:
     import gym
-except ImportError as exc:  # pragma: no cover - guidance for missing dependency
-    raise SystemExit(
-        "The 'gym' package is required to run this script. Install it via 'pip install gym'."
-    ) from exc
+except ImportError:
+    gym = None  # type: ignore[assignment]
+
+if gym is None or not hasattr(gym, "make"):
+    try:
+        import gymnasium as gym  # type: ignore[assignment]
+    except ImportError as exc:  # pragma: no cover - guidance for missing dependency
+        raise SystemExit(
+            "Either the 'gym' or 'gymnasium' package is required. Install one via 'pip install gym'"
+            " or 'pip install gymnasium'."
+        ) from exc
 
 
 def _ensure_directory(path: Path) -> None:
