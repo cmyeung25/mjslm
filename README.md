@@ -77,3 +77,46 @@ pip install gym numpy
 # or, if you prefer the actively maintained fork
 pip install gymnasium numpy
 ```
+
+## Train the Hong Kong Mahjong self-play policy
+
+The `train_hk_mahjong_selfplay.py` script runs four identical policies against
+each other inside the full Hong Kong Mahjong environment and logs how the East
+seat improves over time. To get started:
+
+1. Install the required libraries (Gymnasium and NumPy are mandatory; install
+   Matplotlib if you want the learning-curve plot or omit it and run with
+   ``--no-plot``):
+
+   ```bash
+   pip install gymnasium numpy matplotlib
+   ```
+
+2. Launch training. This example runs 300 rounds and saves the learning curve
+   under `outputs/hk_mahjong_learning_curve.png`:
+
+   ```bash
+   python train_hk_mahjong_selfplay.py --episodes 300
+   ```
+
+   The script prints periodic summaries such as the scaled score delta for the
+   East seat (dealer), its moving-average reward, and the rolling win rate. At
+   the end of the run you will see a message indicating where the PNG plot was
+   written.
+
+3. Explore additional flags when you are ready to customise the run:
+
+   ```bash
+   python train_hk_mahjong_selfplay.py \
+       --episodes 500 \
+       --reward-scale 120 \
+       --temperature 0.25 \
+       --output-dir results \
+       --plot-name my_curve.png
+   ```
+
+   Lower `--reward-scale` values make the agent more conservative about risky
+   discards (avoiding 出衝), while higher values encourage pressing for extra
+   fan before declaring a win (叫糊). Use `--log-every 1` to see a summary line
+   for each round and combine it with `--verbose` to print the full Mahjong log
+   for every hand if you need to audit decisions.
