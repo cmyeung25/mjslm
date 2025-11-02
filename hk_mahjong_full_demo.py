@@ -42,16 +42,23 @@ from __future__ import annotations
 import random
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 try:  # pragma: no cover - optional dependency
-    import gym
-    from gym import spaces
+    import gymnasium as gym
+    from gymnasium import spaces
 except ImportError:  # pragma: no cover - optional dependency
-    gym = None
-    spaces = None
+    try:
+        import gym
+        from gym import spaces
+    except ImportError:  # pragma: no cover - optional dependency
+        gym = None
+        spaces = None
+
+
+GymEnvBase = getattr(gym, "Env", object) if gym is not None else object
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +408,13 @@ def can_win_hand(concealed: Sequence[int], melds: Sequence[Meld]) -> bool:
 class MahjongGame:
     """Single-round Hong Kong Mahjong game loop."""
 
-    def __init__(self, *, rng: Optional[random.Random] = None, verbose: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        rng: Optional[random.Random] = None,
+        verbose: bool = True,
+        controllers: Optional[Sequence[object]] = None,
+    ) -> None:
         self.round_wind = 27  # East
         self.dealer = 0
         self.players = [
@@ -419,6 +432,11 @@ class MahjongGame:
         self.round_over = False
         self.result: Optional[dict] = None
         self.last_drawn_tile: Optional[int] = None
+        self.controllers: Dict[int, object] = {}
+        if controllers:
+            for idx, controller in enumerate(controllers):
+                if controller is not None:
+                    self.controllers[idx] = controller
 
     # ----- Utility logging -------------------------------------------------
 
@@ -627,10 +645,16 @@ class MahjongGame:
             f"{player.name} calls pon on {tile_name(tile)} from Player {from_player+1}"
         )
 
-    def execute_chi(self, player_index: int, tile: int, from_player: int) -> None:
+    def execute_chi(
+        self, player_index: int, base_tile: int, from_player: int, discard_tile: int
+    ) -> None:
         player = self.players[player_index]
-        sequence = [tile, tile + 1, tile + 2]
-        needed = [t for t in sequence if t != tile]
+        sequence = [base_tile, base_tile + 1, base_tile + 2]
+        if discard_tile not in sequence:
+            raise ValueError(
+                "Discard tile does not match chi sequence"
+            )
+        needed = [t for t in sequence if t != discard_tile]
         player.remove_tiles(needed)
         meld_tiles = sorted(sequence)
         player.add_meld(Meld("chi", meld_tiles, open=True, from_player=from_player))
@@ -640,17 +664,45 @@ class MahjongGame:
 
     # ----- AI heuristics ---------------------------------------------------
 
+    def set_controller(self, player_index: int, controller: Optional[object]) -> None:
+        """Attach or remove a controller for the given player."""
+
+        if controller is None:
+            self.controllers.pop(player_index, None)
+        else:
+            self.controllers[player_index] = controller
+
     def ai_choose_self_action(
-        self, actions: List[Tuple[str, Optional[int]]]
+        self,
+        actions: List[Tuple[str, Optional[int]]],
+        player_index: Optional[int] = None,
+        drawn_tile: Optional[int] = None,
     ) -> Optional[Tuple[str, Optional[int]]]:
         if not actions:
             return None
+        if player_index is None:
+            player_index = self.current_player
+        controller = self.controllers.get(player_index)
+        if controller and hasattr(controller, "choose_self_action"):
+            choice = controller.choose_self_action(self, player_index, actions, drawn_tile)
+            if choice is not None:
+                return choice
         priority = {"tsumo": 3, "concealed_kong": 2, "added_kong": 2}
         actions.sort(key=lambda a: priority.get(a[0], 0), reverse=True)
         return actions[0]
 
-    def ai_discard(self, player: PlayerState) -> int:
+    def ai_discard(
+        self, player: PlayerState, player_index: Optional[int] = None
+    ) -> int:
         # Simple heuristic: discard the tile with the highest id (least useful)
+        if player_index is None:
+            player_index = self.players.index(player)
+        controller = self.controllers.get(player_index)
+        if controller and hasattr(controller, "choose_discard"):
+            tile_choice = controller.choose_discard(self, player_index)
+            if tile_choice is not None and tile_choice in player.hand:
+                player.hand.remove(tile_choice)
+                return tile_choice
         tile = max(player.hand)
         player.hand.remove(tile)
         return tile
@@ -746,7 +798,9 @@ class MahjongGame:
                 if self.current_player == 0:
                     self.prompt_self_actions(actions)
                 else:
-                    choice = self.ai_choose_self_action(actions)
+                    choice = self.ai_choose_self_action(
+                        actions, self.current_player, tile
+                    )
                     if choice:
                         self.process_self_action(self.current_player, choice)
                         if self.round_over:
@@ -764,7 +818,9 @@ class MahjongGame:
             player.must_discard = False
 
             reactions = self.reactions_to_discard(self.current_player, discard_tile)
-            chosen_reaction = self.resolve_reactions(self.current_player, reactions)
+            chosen_reaction = self.resolve_reactions(
+                self.current_player, reactions, discard_tile
+            )
 
             if chosen_reaction is None:
                 self.current_player = (self.current_player + 1) % 4
@@ -790,7 +846,12 @@ class MahjongGame:
                 self.current_player = actor_idx
             elif action[0] == "chi":
                 actor.hand.append(discard_tile)
-                self.execute_chi(actor_idx, action[1] or discard_tile, self.current_player)
+                self.execute_chi(
+                    actor_idx,
+                    action[1] or discard_tile,
+                    self.current_player,
+                    discard_tile,
+                )
                 actor.must_discard = True
                 self.current_player = actor_idx
 
@@ -845,24 +906,47 @@ class MahjongGame:
                         return player.hand.pop(idx)
                 print("Invalid input, try again.")
         else:
-            return self.ai_discard(player)
+            return self.ai_discard(player, player_index)
 
     def resolve_reactions(
         self,
         discarder: int,
         reactions: List[Tuple[int, Tuple[str, Optional[int]]]],
+        tile: Optional[int] = None,
     ) -> Optional[Tuple[int, Tuple[str, Optional[int]]]]:
         if not reactions:
             return None
         priority = {"ron": 3, "kong": 2, "pon": 1, "chi": 0}
+        options_by_player: Dict[int, List[Tuple[str, Optional[int]]]] = {}
+        for idx, action in reactions:
+            options_by_player.setdefault(idx, []).append(action)
+
+        chosen: List[Tuple[int, Tuple[str, Optional[int]]]] = []
+        for idx, options in options_by_player.items():
+            controller = self.controllers.get(idx)
+            choice: Optional[Tuple[str, Optional[int]]] = None
+            if controller and hasattr(controller, "choose_reaction"):
+                choice = controller.choose_reaction(
+                    self, idx, options, discarder, tile
+                )
+                if choice is not None and choice not in options:
+                    choice = None
+            if choice is None and options:
+                options.sort(key=lambda a: priority.get(a[0], -1), reverse=True)
+                choice = options[0]
+            if choice is not None:
+                chosen.append((idx, choice))
+
+        if not chosen:
+            return None
 
         def sort_key(item: Tuple[int, Tuple[str, Optional[int]]]) -> Tuple[int, int]:
             idx, action = item
             relative = (idx - discarder) % 4
             return (-priority.get(action[0], -1), relative)
 
-        reactions.sort(key=sort_key)
-        idx, action = reactions[0]
+        chosen.sort(key=sort_key)
+        idx, action = chosen[0]
         actor = self.players[idx]
         self.log(
             f"Player {idx+1} ({actor.name}) chooses {action[0]}"
@@ -875,21 +959,32 @@ class MahjongGame:
 # ---------------------------------------------------------------------------
 
 
-class HongKongMahjongEnv:
+class HongKongMahjongEnv(GymEnvBase):
     """OpenAI Gym style environment that wraps :class:`MahjongGame`."""
 
     metadata = {"render_modes": ["human"]}
 
-    def __init__(self, *, seed: Optional[int] = None, verbose: bool = False) -> None:
-        if gym is None or spaces is None:  # pragma: no cover - optional dependency
+    def __init__(
+        self,
+        *,
+        seed: Optional[int] = None,
+        verbose: bool = False,
+        agent_index: int = 0,
+        controllers: Optional[Sequence[object]] = None,
+    ) -> None:
+        if spaces is None:  # pragma: no cover - optional dependency
             raise ImportError(
-                "gym is required to use HongKongMahjongEnv. Install gym before "
-                "creating the environment."
+                "HongKongMahjongEnv requires the 'gymnasium' (preferred) or 'gym' package. "
+                "Install one of them with 'pip install gymnasium' or 'pip install gym'."
             )
 
         self.random = random.Random(seed)
-        self.game = MahjongGame(rng=self.random, verbose=verbose)
-        self.agent_index = 0
+        self.game = MahjongGame(
+            rng=self.random, verbose=verbose, controllers=controllers
+        )
+        if not 0 <= agent_index < 4:
+            raise ValueError("agent_index must be between 0 and 3")
+        self.agent_index = agent_index
 
         self.action_space = spaces.Discrete(64)
         self.observation_space = spaces.Dict(
@@ -912,6 +1007,13 @@ class HongKongMahjongEnv:
         self._reaction_tile: Optional[int] = None
         self._terminal_reason: Optional[str] = None
         self._pending_draw_override: Optional[int] = None
+
+    def set_controller(self, player_index: int, controller: Optional[object]) -> None:
+        """Update the controller responsible for a non-learning seat."""
+
+        if player_index == self.agent_index:
+            raise ValueError("Cannot attach a controller to the learning agent seat")
+        self.game.set_controller(player_index, controller)
 
     # ----- Gym API ---------------------------------------------------------
 
@@ -1066,7 +1168,7 @@ class HongKongMahjongEnv:
             self.game.log(f"Player {idx+1} ({player.name}) draws {tile_name(tile)}")
 
             actions = self.game.available_self_actions(idx, tile)
-            choice = self.game.ai_choose_self_action(actions)
+            choice = self.game.ai_choose_self_action(actions, idx, tile)
             if choice:
                 self.game.process_self_action(idx, choice)
                 if self.game.round_over:
@@ -1076,7 +1178,7 @@ class HongKongMahjongEnv:
                     return False
             player.must_discard = True
 
-        discard_tile = self.game.ai_discard(player)
+        discard_tile = self.game.ai_discard(player, idx)
         self.game.discard_pile.append(discard_tile)
         player.discards.append(discard_tile)
         self.game.log(
@@ -1109,7 +1211,7 @@ class HongKongMahjongEnv:
             self._reaction_tile = tile
             return True
 
-        chosen = self.game.resolve_reactions(discarder, reactions)
+        chosen = self.game.resolve_reactions(discarder, reactions, tile)
         if chosen is None:
             return False
         actor_idx, action = chosen
@@ -1152,7 +1254,9 @@ class HongKongMahjongEnv:
         if action[0] == "skip":
             remaining = [item for item in self._pending_reactions if item[0] != self.agent_index]
             if remaining:
-                chosen = self.game.resolve_reactions(self._reaction_discarder, remaining)
+                chosen = self.game.resolve_reactions(
+                    self._reaction_discarder, remaining, self._reaction_tile
+                )
                 if chosen:
                     self._clear_reaction_context()
                     actor_idx, act = chosen
@@ -1185,7 +1289,12 @@ class HongKongMahjongEnv:
         elif action[0] == "chi":
             player.hand.append(tile)
             base_tile = action[1] if action[1] is not None else tile
-            self.game.execute_chi(self.agent_index, base_tile, self._reaction_discarder)
+            self.game.execute_chi(
+                self.agent_index,
+                base_tile,
+                self._reaction_discarder,
+                self._reaction_tile,
+            )
         else:
             raise ValueError(f"Unsupported reaction action {action[0]}")
 
@@ -1224,7 +1333,7 @@ class HongKongMahjongEnv:
         elif action[0] == "chi":
             actor.hand.append(tile)
             base_tile = action[1] if action[1] is not None else tile
-            self.game.execute_chi(actor_idx, base_tile, discarder)
+            self.game.execute_chi(actor_idx, base_tile, discarder, tile)
             actor.must_discard = True
             self.game.current_player = actor_idx
 
