@@ -1293,19 +1293,19 @@ class HongKongMahjongEnv(GymEnvBase):
             raise RuntimeError("Reaction context is missing")
 
         if action[0] == "skip":
+            discarder = self._reaction_discarder
+            tile = self._reaction_tile
             remaining = [item for item in self._pending_reactions if item[0] != self.agent_index]
             if remaining:
                 chosen = self.game.resolve_reactions(
-                    self._reaction_discarder, remaining, self._reaction_tile
+                    discarder, remaining, tile
                 )
                 if chosen:
                     self._clear_reaction_context()
                     actor_idx, act = chosen
-                    self._execute_reaction(
-                        actor_idx, act, self._reaction_discarder, self._reaction_tile
-                    )
+                    self._execute_reaction(actor_idx, act, discarder, tile)
                     return
-            self.game.current_player = (self._reaction_discarder + 1) % 4
+            self.game.current_player = (discarder + 1) % 4
             self._clear_reaction_context()
             return
 
