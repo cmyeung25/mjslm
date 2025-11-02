@@ -637,11 +637,19 @@ class MahjongGame:
             self.log(f"{player.name} draws supplement tile {tile_name(supplement)}")
         return supplement
 
-    def execute_pon(self, player_index: int, tile: int, from_player: int) -> bool:
+    def execute_pon(
+        self, player_index: int, tile: Optional[int], from_player: int
+    ) -> bool:
         player = self.players[player_index]
-        if player.hand.count(tile) < 2:
+        if tile is None:
             self.log(
-                f"{player.name} attempted pon on {tile_name(tile)} but lacked the tiles; "
+                f"{player.name} attempted pon but no tile was provided; treating as skip."
+            )
+            return False
+        if player.hand.count(tile) < 2:
+            tile_label = tile_name(tile) if isinstance(tile, int) else str(tile)
+            self.log(
+                f"{player.name} attempted pon on {tile_label} but lacked the tiles; "
                 "treating as skip."
             )
             return False
