@@ -649,13 +649,40 @@ class MahjongGame:
         self, player_index: int, base_tile: int, from_player: int, discard_tile: int
     ) -> None:
         player = self.players[player_index]
-        sequence = [base_tile, base_tile + 1, base_tile + 2]
-        if discard_tile not in sequence:
-            raise ValueError(
-                "Discard tile does not match chi sequence"
-            )
-        needed = [t for t in sequence if t != discard_tile]
+
+        if discard_tile > 26:
+            raise ValueError("Chi is only available on suited tiles")
+
+        suit = discard_tile // 9
+        candidates: List[Tuple[int, List[int], List[int]]] = []
+        for start in range(discard_tile - 2, discard_tile + 1):
+            if start < 0 or start > 26:
+                continue
+            if start // 9 != suit:
+                continue
+            sequence = [start, start + 1, start + 2]
+            if discard_tile not in sequence:
+                continue
+            needed = [t for t in sequence if t != discard_tile]
+            if all(player.hand.count(t) >= needed.count(t) for t in set(needed)):
+                candidates.append((start, sequence, needed))
+
+        if not candidates:
+            raise ValueError("Player cannot form chi with the provided discard")
+
+        chosen_sequence: Optional[Tuple[List[int], List[int]]] = None
+        for start, sequence, needed in candidates:
+            if start == base_tile:
+                chosen_sequence = (sequence, needed)
+                break
+
+        if chosen_sequence is None:
+            sequence, needed = candidates[0][1], candidates[0][2]
+        else:
+            sequence, needed = chosen_sequence
+
         player.remove_tiles(needed)
+
         meld_tiles = sorted(sequence)
         player.add_meld(Meld("chi", meld_tiles, open=True, from_player=from_player))
         self.log(
@@ -835,17 +862,14 @@ class MahjongGame:
                 self.resolve_win(actor_idx, "ron", discard_tile, discarder=self.current_player)
                 return
             elif action[0] == "kong":
-                actor.hand.extend([discard_tile])
                 self.execute_open_kong(actor_idx, discard_tile, self.current_player)
                 actor.must_discard = True
                 self.current_player = actor_idx
             elif action[0] == "pon":
-                actor.hand.append(discard_tile)
                 self.execute_pon(actor_idx, discard_tile, self.current_player)
                 actor.must_discard = True
                 self.current_player = actor_idx
             elif action[0] == "chi":
-                actor.hand.append(discard_tile)
                 self.execute_chi(
                     actor_idx,
                     action[1] or discard_tile,
@@ -1279,15 +1303,12 @@ class HongKongMahjongEnv(GymEnvBase):
             return
         supplement: Optional[int] = None
         if action[0] == "kong":
-            player.hand.extend([tile])
             supplement = self.game.execute_open_kong(
                 self.agent_index, tile, self._reaction_discarder
             )
         elif action[0] == "pon":
-            player.hand.append(tile)
             self.game.execute_pon(self.agent_index, tile, self._reaction_discarder)
         elif action[0] == "chi":
-            player.hand.append(tile)
             base_tile = action[1] if action[1] is not None else tile
             self.game.execute_chi(
                 self.agent_index,
@@ -1321,17 +1342,14 @@ class HongKongMahjongEnv(GymEnvBase):
             self.game.resolve_win(actor_idx, "ron", tile, discarder=discarder)
             return
         if action[0] == "kong":
-            actor.hand.extend([tile])
             self.game.execute_open_kong(actor_idx, tile, discarder)
             actor.must_discard = True
             self.game.current_player = actor_idx
         elif action[0] == "pon":
-            actor.hand.append(tile)
             self.game.execute_pon(actor_idx, tile, discarder)
             actor.must_discard = True
             self.game.current_player = actor_idx
         elif action[0] == "chi":
-            actor.hand.append(tile)
             base_tile = action[1] if action[1] is not None else tile
             self.game.execute_chi(actor_idx, base_tile, discarder, tile)
             actor.must_discard = True
