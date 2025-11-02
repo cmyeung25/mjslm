@@ -47,11 +47,18 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 
 try:  # pragma: no cover - optional dependency
-    import gym
-    from gym import spaces
+    import gymnasium as gym
+    from gymnasium import spaces
 except ImportError:  # pragma: no cover - optional dependency
-    gym = None
-    spaces = None
+    try:
+        import gym
+        from gym import spaces
+    except ImportError:  # pragma: no cover - optional dependency
+        gym = None
+        spaces = None
+
+
+GymEnvBase = getattr(gym, "Env", object) if gym is not None else object
 
 
 # ---------------------------------------------------------------------------
@@ -941,7 +948,7 @@ class MahjongGame:
 # ---------------------------------------------------------------------------
 
 
-class HongKongMahjongEnv:
+class HongKongMahjongEnv(GymEnvBase):
     """OpenAI Gym style environment that wraps :class:`MahjongGame`."""
 
     metadata = {"render_modes": ["human"]}
@@ -954,10 +961,10 @@ class HongKongMahjongEnv:
         agent_index: int = 0,
         controllers: Optional[Sequence[object]] = None,
     ) -> None:
-        if gym is None or spaces is None:  # pragma: no cover - optional dependency
+        if spaces is None:  # pragma: no cover - optional dependency
             raise ImportError(
-                "gym is required to use HongKongMahjongEnv. Install gym before "
-                "creating the environment."
+                "HongKongMahjongEnv requires the 'gymnasium' (preferred) or 'gym' package. "
+                "Install one of them with 'pip install gymnasium' or 'pip install gym'."
             )
 
         self.random = random.Random(seed)
