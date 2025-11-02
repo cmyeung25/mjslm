@@ -637,13 +637,20 @@ class MahjongGame:
             self.log(f"{player.name} draws supplement tile {tile_name(supplement)}")
         return supplement
 
-    def execute_pon(self, player_index: int, tile: int, from_player: int) -> None:
+    def execute_pon(self, player_index: int, tile: int, from_player: int) -> bool:
         player = self.players[player_index]
+        if player.hand.count(tile) < 2:
+            self.log(
+                f"{player.name} attempted pon on {tile_name(tile)} but lacked the tiles; "
+                "treating as skip."
+            )
+            return False
         player.remove_tiles([tile] * 2)
         player.add_meld(Meld("pon", [tile] * 3, open=True, from_player=from_player))
         self.log(
             f"{player.name} calls pon on {tile_name(tile)} from Player {from_player+1}"
         )
+        return True
 
     def execute_chi(
         self, player_index: int, base_tile: int, from_player: int, discard_tile: int
@@ -866,9 +873,11 @@ class MahjongGame:
                 actor.must_discard = True
                 self.current_player = actor_idx
             elif action[0] == "pon":
-                self.execute_pon(actor_idx, discard_tile, self.current_player)
-                actor.must_discard = True
-                self.current_player = actor_idx
+                if self.execute_pon(actor_idx, discard_tile, self.current_player):
+                    actor.must_discard = True
+                    self.current_player = actor_idx
+                else:
+                    self.current_player = (self.current_player + 1) % 4
             elif action[0] == "chi":
                 self.execute_chi(
                     actor_idx,
@@ -1307,7 +1316,13 @@ class HongKongMahjongEnv(GymEnvBase):
                 self.agent_index, tile, self._reaction_discarder
             )
         elif action[0] == "pon":
-            self.game.execute_pon(self.agent_index, tile, self._reaction_discarder)
+            if not self.game.execute_pon(
+                self.agent_index, tile, self._reaction_discarder
+            ):
+                # Treat the failed claim as a skip and pass priority onward.
+                self.game.current_player = (self._reaction_discarder + 1) % 4
+                self._clear_reaction_context()
+                return
         elif action[0] == "chi":
             base_tile = action[1] if action[1] is not None else tile
             self.game.execute_chi(
@@ -1323,6 +1338,8 @@ class HongKongMahjongEnv(GymEnvBase):
             if action[0] == "kong":
                 player.must_discard = False
                 self._pending_draw_override = supplement
+            elif action[0] == "pon":
+                player.must_discard = True
             else:
                 player.must_discard = True
             self.game.current_player = self.agent_index
@@ -1346,9 +1363,12 @@ class HongKongMahjongEnv(GymEnvBase):
             actor.must_discard = True
             self.game.current_player = actor_idx
         elif action[0] == "pon":
-            self.game.execute_pon(actor_idx, tile, discarder)
-            actor.must_discard = True
-            self.game.current_player = actor_idx
+            if self.game.execute_pon(actor_idx, tile, discarder):
+                actor.must_discard = True
+                self.game.current_player = actor_idx
+            else:
+                # Treat as a skipped claim and advance to the next player.
+                self.game.current_player = (discarder + 1) % 4
         elif action[0] == "chi":
             base_tile = action[1] if action[1] is not None else tile
             self.game.execute_chi(actor_idx, base_tile, discarder, tile)
