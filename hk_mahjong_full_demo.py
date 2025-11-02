@@ -735,16 +735,32 @@ class MahjongGame:
 
     def ai_discard(
         self, player: PlayerState, player_index: Optional[int] = None
-    ) -> int:
-        # Simple heuristic: discard the tile with the highest id (least useful)
+    ) -> Optional[int]:
+        """Return the tile the AI elects to discard, or ``None`` if impossible."""
+
         if player_index is None:
             player_index = self.players.index(player)
+
+        if not player.hand:
+            self.log(
+                f"{player.name} has no tiles available to discard; passing the turn."
+            )
+            return None
+
         controller = self.controllers.get(player_index)
         if controller and hasattr(controller, "choose_discard"):
             tile_choice = controller.choose_discard(self, player_index)
             if tile_choice is not None and tile_choice in player.hand:
                 player.hand.remove(tile_choice)
                 return tile_choice
+
+        if not player.hand:
+            self.log(
+                f"{player.name} still has no tiles to discard after policy selection; "
+                "passing the turn."
+            )
+            return None
+
         tile = max(player.hand)
         player.hand.remove(tile)
         return tile
@@ -947,7 +963,12 @@ class MahjongGame:
                         return player.hand.pop(idx)
                 print("Invalid input, try again.")
         else:
-            return self.ai_discard(player, player_index)
+            tile = self.ai_discard(player, player_index)
+            if tile is None:
+                raise RuntimeError(
+                    f"{player.name} had no tiles to discard during CLI play."
+                )
+            return tile
 
     def resolve_reactions(
         self,
@@ -1183,6 +1204,14 @@ class HongKongMahjongEnv(GymEnvBase):
                         return
                     player.must_discard = True
                 if player.must_discard:
+                    if not player.hand:
+                        self.game.log(
+                            f"Player {self.agent_index+1} ({player.name}) has no tiles to discard; "
+                            "passing the turn."
+                        )
+                        player.must_discard = False
+                        self.game.current_player = (self.game.current_player + 1) % 4
+                        continue
                     self._stage = "discard"
                     self._legal_actions = [("discard", tile) for tile in player.hand]
                     return
@@ -1220,6 +1249,13 @@ class HongKongMahjongEnv(GymEnvBase):
             player.must_discard = True
 
         discard_tile = self.game.ai_discard(player, idx)
+        if discard_tile is None:
+            self.game.log(
+                f"Player {idx+1} ({player.name}) cannot discard; advancing to the next seat."
+            )
+            player.must_discard = False
+            self.game.current_player = (idx + 1) % 4
+            return False
         self.game.discard_pile.append(discard_tile)
         player.discards.append(discard_tile)
         self.game.log(

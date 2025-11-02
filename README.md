@@ -84,8 +84,9 @@ The `train_hk_mahjong_selfplay.py` script runs four identical policies against
 each other inside the full Hong Kong Mahjong environment and logs how the East
 seat improves over time. To get started:
 
-1. Install the required libraries (Gymnasium, NumPy, and Matplotlib for the
-   learning-curve plot):
+1. Install the required libraries (Gymnasium and NumPy are mandatory; install
+   Matplotlib if you want the learning-curve plot or omit it and run with
+   ``--no-plot``):
 
    ```bash
    pip install gymnasium numpy matplotlib
@@ -116,5 +117,6 @@ seat improves over time. To get started:
 
    Lower `--reward-scale` values make the agent more conservative about risky
    discards (avoiding 出衝), while higher values encourage pressing for extra
-   fan before declaring a win (叫糊). Use `--verbose` to print the full Mahjong
-   log for every hand if you need to audit decisions.
+   fan before declaring a win (叫糊). Use `--log-every 1` to see a summary line
+   for each round and combine it with `--verbose` to print the full Mahjong log
+   for every hand if you need to audit decisions.

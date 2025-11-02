@@ -19,8 +19,9 @@ an extra fan can be worse than folding when the wall is thin or the hand is
 fragile.
 
 Running the script produces a PNG plot that tracks the moving average of the
-scaled score and win rate for seat 1 (East) across training episodes. Start a
-default run with::
+scaled score and win rate for seat 1 (East) across training episodes. If
+``matplotlib`` is not available in your environment, pass ``--no-plot`` to skip
+generating the figure. Start a default run with::
 
     python train_hk_mahjong_selfplay.py --episodes 300
 
@@ -44,10 +45,8 @@ from typing import List, Optional, Sequence, Tuple
 
 try:  # pragma: no cover - optional dependency
     import matplotlib.pyplot as plt
-except ImportError as exc:  # pragma: no cover - optional dependency
-    raise SystemExit(
-        "matplotlib is required to plot the learning curve. Install it with 'pip install matplotlib'."
-    ) from exc
+except ImportError:  # pragma: no cover - optional dependency
+    plt = None
 import numpy as np
 
 from hk_mahjong_full_demo import HongKongMahjongEnv
@@ -185,6 +184,12 @@ class SharedPolicy:
         seat: int,
         temperature: Optional[float] = None,
     ) -> Tuple[int, Tuple[str, Optional[int]]]:
+        if not legal_actions:
+            stage = int(obs.get("stage", -1)) if isinstance(obs, dict) else -1
+            raise ValueError(
+                "SharedPolicy.select_action received no legal actions "
+                f"for seat {seat} during stage {stage}."
+            )
         obs_vec = encode_observation(obs)
         action_vecs = [action_features(action) for action in legal_actions]
         phi_vectors = [np.kron(vec, obs_vec) for vec in action_vecs]
@@ -254,6 +259,12 @@ class PolicyController:
 
     def choose_discard(self, game, player_index: int) -> Optional[int]:
         player = game.players[player_index]
+        if not player.hand:
+            game.log(
+                f"{player.name} has no concealed tiles available to discard; "
+                "skipping policy selection."
+            )
+            return None
         legal = [("discard", tile) for tile in player.hand]
         obs = build_observation(game, player_index, STAGE_DISCARD)
         _, action = self.policy.select_action(obs, legal, seat=self.seat)
@@ -335,10 +346,15 @@ def parse_args() -> argparse.Namespace:
         default=25,
         help="How often to print intermediate training statistics",
     )
+    parser.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Skip creating the learning curve plot (useful when matplotlib is unavailable)",
+    )
     return parser.parse_args()
 
 
-def train(args: argparse.Namespace) -> Path:
+def train(args: argparse.Namespace) -> Optional[Path]:
     random.seed(args.seed)
     np.random.seed(args.seed)
 
@@ -418,6 +434,22 @@ def train(args: argparse.Namespace) -> Path:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     plot_path = args.output_dir / args.plot_name
     episodes = np.arange(1, args.episodes + 1)
+
+    if args.no_plot:
+        if plt is None:
+            print(
+                "matplotlib is not installed; skipping plot generation as requested with --no-plot."
+            )
+        else:
+            print("Skipping plot generation (--no-plot).")
+        return None
+
+    if plt is None:
+        print(
+            "matplotlib is not installed, so the learning curve will not be plotted. "
+            "Install it with 'pip install matplotlib' or rerun with --no-plot to silence this message."
+        )
+        return None
 
     fig, ax1 = plt.subplots(figsize=(10, 6))
     ax1.plot(episodes, reward_curve, color="tab:blue", label="Seat 1 mean scaled score")
