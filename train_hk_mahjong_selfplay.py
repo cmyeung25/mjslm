@@ -19,7 +19,18 @@ an extra fan can be worse than folding when the wall is thin or the hand is
 fragile.
 
 Running the script produces a PNG plot that tracks the moving average of the
-scaled score and win rate for seat 1 (East) across training episodes.
+scaled score and win rate for seat 1 (East) across training episodes. Start a
+default run with::
+
+    python train_hk_mahjong_selfplay.py --episodes 300
+
+Install the required dependencies first if they are not already present::
+
+    pip install gymnasium numpy matplotlib
+
+The plot is written to ``outputs/hk_mahjong_learning_curve.png`` by default and
+the terminal shows periodic summaries of the East seat's scaled score delta,
+moving-average reward, and win rate.
 """
 
 from __future__ import annotations
