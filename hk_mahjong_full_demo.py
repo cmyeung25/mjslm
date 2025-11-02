@@ -645,10 +645,16 @@ class MahjongGame:
             f"{player.name} calls pon on {tile_name(tile)} from Player {from_player+1}"
         )
 
-    def execute_chi(self, player_index: int, tile: int, from_player: int) -> None:
+    def execute_chi(
+        self, player_index: int, base_tile: int, from_player: int, discard_tile: int
+    ) -> None:
         player = self.players[player_index]
-        sequence = [tile, tile + 1, tile + 2]
-        needed = [t for t in sequence if t != tile]
+        sequence = [base_tile, base_tile + 1, base_tile + 2]
+        if discard_tile not in sequence:
+            raise ValueError(
+                "Discard tile does not match chi sequence"
+            )
+        needed = [t for t in sequence if t != discard_tile]
         player.remove_tiles(needed)
         meld_tiles = sorted(sequence)
         player.add_meld(Meld("chi", meld_tiles, open=True, from_player=from_player))
@@ -840,7 +846,12 @@ class MahjongGame:
                 self.current_player = actor_idx
             elif action[0] == "chi":
                 actor.hand.append(discard_tile)
-                self.execute_chi(actor_idx, action[1] or discard_tile, self.current_player)
+                self.execute_chi(
+                    actor_idx,
+                    action[1] or discard_tile,
+                    self.current_player,
+                    discard_tile,
+                )
                 actor.must_discard = True
                 self.current_player = actor_idx
 
@@ -1278,7 +1289,12 @@ class HongKongMahjongEnv(GymEnvBase):
         elif action[0] == "chi":
             player.hand.append(tile)
             base_tile = action[1] if action[1] is not None else tile
-            self.game.execute_chi(self.agent_index, base_tile, self._reaction_discarder)
+            self.game.execute_chi(
+                self.agent_index,
+                base_tile,
+                self._reaction_discarder,
+                self._reaction_tile,
+            )
         else:
             raise ValueError(f"Unsupported reaction action {action[0]}")
 
@@ -1317,7 +1333,7 @@ class HongKongMahjongEnv(GymEnvBase):
         elif action[0] == "chi":
             actor.hand.append(tile)
             base_tile = action[1] if action[1] is not None else tile
-            self.game.execute_chi(actor_idx, base_tile, discarder)
+            self.game.execute_chi(actor_idx, base_tile, discarder, tile)
             actor.must_discard = True
             self.game.current_player = actor_idx
 
